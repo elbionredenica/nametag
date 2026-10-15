@@ -41,7 +41,7 @@ you've probably hit this exact wall too. This one's for us.
 brew install --cask elbionredenica/tap/nametag
 ```
 
-Or grab `Nametag-0.1.0.zip` from [Releases](https://github.com/elbionredenica/nametag/releases), unzip,
+Or grab `Nametag-0.1.1.zip` from [Releases](https://github.com/elbionredenica/nametag/releases), unzip,
 and drag Nametag into Applications. It's signed and notarized by Apple.
 
 To build it yourself instead: `./scripts/build-app.sh && open build/Nametag.app`.
