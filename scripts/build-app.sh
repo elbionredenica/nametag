@@ -14,14 +14,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Nametag"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
-# App icon: every size macOS asks for, from the 1024px master.
-ICONSET="$(mktemp -d)/AppIcon.iconset"
-mkdir -p "$ICONSET"
-for size in 16 32 128 256 512; do
-  sips -z $size $size Resources/Icon/AppIcon-1024.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-  sips -z $((size * 2)) $((size * 2)) Resources/Icon/AppIcon-1024.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
-done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+# App icon: compiled from the Icon Composer file into Assets.car (macOS 26 style, shaped by the
+# system) plus AppIcon.icns for older macOS versions.
+xcrun actool Resources/AppIcon.icon --compile "$APP/Contents/Resources" --platform macosx \
+  --minimum-deployment-target 13.0 --app-icon AppIcon \
+  --output-partial-info-plist "$(mktemp -d)/partial.plist" >/dev/null
 
 # Prefer Developer ID (needed to share the app), then Apple Development, then ad-hoc.
 IDENTITIES="$(security find-identity -v -p codesigning)"

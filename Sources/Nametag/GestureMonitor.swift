@@ -28,6 +28,9 @@ final class GestureMonitor {
     private var nextID = 0
     private var tap: CFMachPort?
 
+    /// Called on the gesture thread when a vertical swipe (opening or closing Mission Control) begins.
+    var onVerticalSwipeBegan: (() -> Void)?
+
     /// The swipe in progress, if any.
     var current: Swipe? {
         lock.lock(); defer { lock.unlock() }
@@ -86,6 +89,7 @@ final class GestureMonitor {
         case 1:
             nextID += 1
             active = Swipe(id: nextID, vertical: vertical, progress: progress)
+            if vertical { onVerticalSwipeBegan?() }
         case 2:
             if active == nil { nextID += 1 }
             active = Swipe(id: active?.id ?? nextID, vertical: active?.vertical ?? vertical, progress: progress)

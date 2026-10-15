@@ -9,7 +9,6 @@ final class OverlayController {
     private let keys = KeyCapture()
     private let gestures = GestureMonitor()
     private var canvases: [CGDirectDisplayID: Canvas] = [:]
-    private var hitTargets: [HitTarget] = []
     private var timer: Timer?
 
     /// Mission Control is on screen: open, or mid-way through a close gesture.
@@ -38,10 +37,13 @@ final class OverlayController {
         var caretToggledAt = Date()
     }
 
-    // The idle check is one Accessibility call (~0.01ms of CPU), so it can run often enough that
-    // names land within a frame or two of Mission Control appearing.
-    private let idleInterval: TimeInterval = 1.0 / 30
+    // While idle, check for Mission Control a few times a second: each check wakes both Nametag and
+    // WindowManager, so checking every frame costs real battery. A Mission Control swipe switches to
+    // per-frame updates the moment it begins (see `start`), so swipes still get names instantly; the
+    // F3 key, hot corners and the Dock show them within a quarter second.
+    private let idleInterval: TimeInterval = 0.25
     private let visibleInterval: TimeInterval = 1.0 / 60
+    private var interval: TimeInterval = 0
     // How Apple's bar follows a swipe, measured from screen recordings on macOS 27:
     // opening, the collapsed bar's labels come down 75pt over the whole swipe; closing, they hold
     // still for the first ~7% of the swipe, then rise 100pt per full swipe.
@@ -60,6 +62,9 @@ final class OverlayController {
     }
 
     func start() {
+        gestures.onVerticalSwipeBegan = { [weak self] in
+            DispatchQueue.main.async { self?.tick() }
+        }
         gestures.start()
         prepareCanvases()
         NotificationCenter.default.addObserver(
@@ -88,6 +93,8 @@ final class OverlayController {
     }
 
     private func schedule(_ interval: TimeInterval) {
+        guard interval != self.interval else { return }
+        self.interval = interval
         timer?.invalidate()
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.tick() }
         timer.tolerance = interval * 0.2
@@ -102,9 +109,10 @@ final class OverlayController {
         // Accessibility tree, but the bar stays on screen until the gesture finishes — or comes
         // back if it's cancelled. Keep going for as long as the bar is there.
         let nowVisible = open || (visible && store.enabled && thumbnails.barOnScreen())
+        // Per-frame updates while Mission Control is up or a swipe is under way; a few checks a second otherwise.
+        schedule(nowVisible || gestures.current?.vertical == true ? visibleInterval : idleInterval)
         if nowVisible != visible {
             visible = nowVisible
-            schedule(nowVisible ? visibleInterval : idleInterval)
             if nowVisible {
                 tickCount = 0
                 thumbnails.reset()
@@ -171,7 +179,6 @@ final class OverlayController {
         // Clicks are only caught while nothing is moving, because window moves trail in Mission Control.
         let atRest = open && gestures.current == nil && !gestures.horizontalSettling && openness == 1
         var drawn = Set<CGDirectDisplayID>()
-        var targetsUsed = 0
 
         for display in gestures.horizontalSettling && !restDisplays.isEmpty ? restDisplays : displays {
             // Screen geometry comes from CoreGraphics, never from Mission Control, whose frames shift
@@ -224,6 +231,7 @@ final class OverlayController {
             if open && !sideways && live.isEmpty { settledExpanded[display.displayID] = nil }
 
             var specs: [PillView.Spec] = []
+            var hits: [Canvas.Hit] = []
             for (i, label) in labels.enumerated() {
                 guard let space = match(label, at: i, labelCount: labels.count, in: displaySpaces),
                       space.number != nil  // leave full-screen app labels alone
@@ -252,15 +260,14 @@ final class OverlayController {
 
                 // Every desktop, named or not, can be clicked and long-pressed.
                 if atRest {
-                    if targetsUsed == hitTargets.count { hitTargets.append(HitTarget()) }
-                    let target = hitTargets[targetsUsed]
-                    targetsUsed += 1
-                    target.onTap = { [weak self] in self?.tapped(label) }
-                    target.onLongPress = { [weak self] in self?.beginEdit(space) }
                     let size = PillView.coverSize(for: label.title, expanded: expanded)
-                    target.place(NSRect(x: (centers[i].x - size.width / 2).rounded(),
-                                        y: (primaryHeight - centers[i].y - size.height / 2).rounded(),
-                                        width: size.width, height: size.height))
+                    let center = CGPoint(x: centers[i].x - screen.minX, y: Canvas.height - (centers[i].y - screen.minY))
+                    hits.append(Canvas.Hit(
+                        frame: NSRect(x: (center.x - size.width / 2).rounded(), y: (center.y - size.height / 2).rounded(),
+                                      width: size.width, height: size.height),
+                        onTap: { [weak self] in self?.tapped(label) },
+                        onLongPress: { [weak self] in self?.beginEdit(space) }
+                    ))
                 }
             }
 
@@ -268,11 +275,10 @@ final class OverlayController {
             canvases[display.displayID] = canvas
             canvas.cover(NSRect(x: screen.minX, y: primaryHeight - screen.maxY,
                                 width: screen.width, height: screen.height))
-            canvas.show(specs)
+            canvas.show(specs, hits: hits)
             drawn.insert(display.displayID)
         }
         for (id, canvas) in canvases where !drawn.contains(id) { canvas.show([]) }
-        for target in hitTargets.dropFirst(targetsUsed) where target.isVisible { target.orderOut(nil) }
     }
 
     /// Mission Control lists a display's spaces in the same order CGS does. If the counts disagree
@@ -285,7 +291,6 @@ final class OverlayController {
 
     private func hideAll() {
         for canvas in canvases.values { canvas.show([]) }
-        for target in hitTargets where target.isVisible { target.orderOut(nil) }
     }
 
     // MARK: Interaction
@@ -367,6 +372,14 @@ final class OverlayController {
 final class Canvas: NSPanel {
     static let height: CGFloat = 260
     private var pills: [PillView] = []
+    private var hitViews: [PressView] = []
+
+    /// A label that can be clicked (switch desktop) or long-pressed (rename), in canvas coordinates.
+    struct Hit {
+        let frame: NSRect
+        let onTap: () -> Void
+        let onLongPress: () -> Void
+    }
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -392,7 +405,10 @@ final class Canvas: NSPanel {
         if !isVisible { orderFrontRegardless() }
     }
 
-    func show(_ specs: [PillView.Spec]) {
+    /// Clicks are caught only on `hits`; everywhere else the canvas is fully transparent, so clicks
+    /// fall through to Mission Control. (Separate click-catching windows don't work: Mission Control
+    /// never shows windows that first appear while it's open.)
+    func show(_ specs: [PillView.Spec], hits: [Hit] = []) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         while pills.count < specs.count {
@@ -405,7 +421,24 @@ final class Canvas: NSPanel {
             pill.isHidden = false
         }
         for pill in pills.dropFirst(specs.count) { pill.isHidden = true }
+
+        while hitViews.count < hits.count {
+            let view = PressView()
+            view.wantsLayer = true
+            // A fully transparent area lets clicks fall through; 1% white catches them invisibly.
+            view.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.01).cgColor
+            contentView?.addSubview(view, positioned: .above, relativeTo: nil)
+            hitViews.append(view)
+        }
+        for (view, hit) in zip(hitViews, hits) {
+            if view.frame != hit.frame { view.frame = hit.frame }
+            view.onTap = hit.onTap
+            view.onLongPress = hit.onLongPress
+            view.isHidden = false
+        }
+        for view in hitViews.dropFirst(hits.count) { view.isHidden = true }
         CATransaction.commit()
+        ignoresMouseEvents = hits.isEmpty
     }
 }
 
@@ -514,41 +547,6 @@ final class PillView: NSView {
         let frame = NSRect(x: (spec.center.x - width / 2).rounded(), y: (spec.center.y - cover.height / 2).rounded(),
                            width: width, height: cover.height)
         if frame != self.frame { self.frame = frame }
-    }
-}
-
-/// An invisible panel over one label that catches clicks: a quick click switches to that desktop, a
-/// long press renames it. Only placed while nothing is moving, since window moves trail in Mission
-/// Control.
-final class HitTarget: NSPanel {
-    var onTap: (() -> Void)?
-    var onLongPress: (() -> Void)?
-    private let root = PressView()
-
-    init() {
-        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        level = .screenSaver
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
-        backgroundColor = .clear
-        isOpaque = false
-        hasShadow = false
-        isReleasedWhenClosed = false
-        animationBehavior = .none
-        root.wantsLayer = true
-        // A fully transparent window lets clicks fall through; 1% white catches them invisibly.
-        root.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.01).cgColor
-        root.onTap = { [weak self] in self?.onTap?() }
-        root.onLongPress = { [weak self] in self?.onLongPress?() }
-        contentView = root
-    }
-
-    // Keyboard input comes from KeyCapture; taking focus would disturb Mission Control.
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-
-    func place(_ frame: NSRect) {
-        if frame != self.frame { setFrame(frame, display: false) }
-        if !isVisible { orderFrontRegardless() }
     }
 }
 
