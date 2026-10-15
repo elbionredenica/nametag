@@ -12,7 +12,7 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resourc
 ZIP="build/Nametag-$VERSION.zip"
 
 ./scripts/build-app.sh
-codesign -dv build/Nametag.app 2>&1 | grep -q "Authority=Developer ID Application" \
+[[ "$(codesign -dv --verbose=2 build/Nametag.app 2>&1)" == *"Authority=Developer ID Application"* ]] \
   || { echo "Nametag.app isn't signed with a Developer ID certificate" >&2; exit 1; }
 
 rm -f "$ZIP"
