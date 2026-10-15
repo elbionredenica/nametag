@@ -37,16 +37,16 @@ you've probably hit this exact wall too. This one's for us.
 
 ## Install
 
-There's no download yet (a notarized release and a Homebrew cask are next). For now, build it:
-
 ```bash
-git clone https://github.com/elbionredenica/nametag.git
-cd nametag
-./scripts/build-app.sh
-open build/Nametag.app
+brew install --cask elbionredenica/tap/nametag
 ```
 
-Needs macOS 13+ and Xcode. On first launch Nametag asks for **Accessibility** access. Turn it on in
+Or grab `Nametag-0.1.0.zip` from [Releases](https://github.com/elbionredenica/nametag/releases), unzip,
+and drag Nametag into Applications. It's signed and notarized by Apple.
+
+To build it yourself instead: `./scripts/build-app.sh && open build/Nametag.app`.
+
+Needs macOS 13+. On first launch Nametag asks for **Accessibility** access. Turn it on in
 System Settings → Privacy & Security.
 
 **What that permission is for, exactly:** reading where Mission Control draws its "Desktop" labels,
