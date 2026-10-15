@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds Nametag.app into ./build and signs it.
-# Signs with the first Apple Development / Developer ID identity it finds, so the
-# Accessibility permission survives rebuilds. Override with CODESIGN_IDENTITY, or "-" for ad-hoc.
+# Signs with your Developer ID if you have one, else Apple Development, so the Accessibility
+# permission survives rebuilds. Override with CODESIGN_IDENTITY, or "-" for ad-hoc.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -23,6 +23,11 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
-IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application|Apple Development/ {print $2; exit}')}"
-codesign --force --options runtime --sign "${IDENTITY:--}" "$APP"
+# Prefer Developer ID (needed to share the app), then Apple Development, then ad-hoc.
+IDENTITIES="$(security find-identity -v -p codesigning)"
+IDENTITY="${CODESIGN_IDENTITY:-$(awk -F'"' '/Developer ID Application/ {print $2; exit}' <<<"$IDENTITIES")}"
+IDENTITY="${IDENTITY:-$(awk -F'"' '/Apple Development/ {print $2; exit}' <<<"$IDENTITIES")}"
+TIMESTAMP=()
+[[ "$IDENTITY" == Developer\ ID* ]] && TIMESTAMP=(--timestamp)
+codesign --force --options runtime "${TIMESTAMP[@]}" --sign "${IDENTITY:--}" "$APP"
 echo "Built $APP (signed: ${IDENTITY:--})"
